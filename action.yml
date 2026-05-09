@@ -1,0 +1,22 @@
+name: 'Postlight Code'
+description: >-
+  Unified security verdict (SHIP / REVIEW / HOLD) for code repos. Runs
+  osv-scanner and gitleaks, posts a check-run with inline annotations and a
+  sticky PR comment. The consuming workflow needs `checks: write` and
+  `pull-requests: write` permissions.
+author: 'James McDaniel'
+branding:
+  icon: 'shield'
+  color: 'blue'
+
+inputs:
+  path:
+    description: 'Path to scan (relative to GITHUB_WORKSPACE).'
+    required: false
+    default: '.'
+
+runs:
+  using: 'docker'
+  image: 'Dockerfile'
+  args:
+    - ${{ inputs.path }}

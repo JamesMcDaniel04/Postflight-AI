@@ -21,15 +21,18 @@ class GitleaksScanner:
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
             report_path = tmp.name
         try:
+            cmd = [
+                self.binary, "detect",
+                "--source", str(target_path),
+                "--report-format", "json",
+                "--report-path", report_path,
+                "--no-banner",
+                "--exit-code", "0",
+            ]
+            if not (target_path / ".git").is_dir():
+                cmd.append("--no-git")
             subprocess.run(
-                [
-                    self.binary, "detect",
-                    "--source", str(target_path),
-                    "--report-format", "json",
-                    "--report-path", report_path,
-                    "--no-banner",
-                    "--exit-code", "0",
-                ],
+                cmd,
                 capture_output=True,
                 text=True,
                 timeout=120,
