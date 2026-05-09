@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "postlight"
+version = "0.1.0"
+description = "Unified security verdict for code repositories: SHIP / REVIEW / HOLD"
+requires-python = ">=3.10"
+dependencies = [
+    "click>=8.1",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+postlight = "postlight.cli:cli"
+
+[tool.hatch.build.targets.wheel]
+packages = ["postlight"]
