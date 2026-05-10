@@ -20,6 +20,7 @@ from .output.github import (
 from .scanners.base import Finding
 from .scanners.gitleaks import GitleaksScanner
 from .scanners.osv import OsvScanner
+from .scanners.zap import ZapBaselineScanner
 from .verdict import Verdict, compute
 
 
@@ -31,13 +32,35 @@ _EXIT_CODE = {Verdict.SHIP: 0, Verdict.REVIEW: 0, Verdict.HOLD: 1}
 @click.group()
 @click.version_option()
 def cli() -> None:
-    pass
+    """Postlight Code: unified security verdict for code repos."""
 
 
 @cli.command()
-@click.argument("path", type=click.Path(exists=True, file_okay=False, dir_okay=True))
-def scan(path: str) -> None:
-    findings = _run_scanners(path)
+@click.argument("path", type=click.Path(exists=True, file_okay=False, dir_okay=True), required=False)
+@click.option(
+    "--demo-dast",
+    "demo_dast",
+    metavar="URL",
+    default=None,
+    help="Run a ZAP baseline DAST scan against URL (passive, ~1-2 min). Demo only — no sandbox.",
+)
+def scan(path: str | None, demo_dast: str | None) -> None:
+    """Scan a local repo (and optionally a running URL with --demo-dast)."""
+    if not path and not demo_dast:
+        click.echo("error: PATH or --demo-dast URL is required", err=True)
+        sys.exit(2)
+
+    findings: list[Finding] = []
+    if path:
+        findings.extend(_run_scanners(path))
+    if demo_dast:
+        zap = ZapBaselineScanner(demo_dast)
+        if not zap.is_available():
+            click.echo(f"[skip] {zap.name}: docker not on PATH", err=True)
+        else:
+            click.echo(f"[run]  {zap.name} against {demo_dast} (this may take 1-2 min)", err=True)
+            findings.extend(zap.scan())
+
     verdict, counts = compute(findings)
     render(findings, verdict, counts)
     sys.exit(_EXIT_CODE[verdict])
