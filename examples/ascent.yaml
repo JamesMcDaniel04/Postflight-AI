@@ -1,0 +1,76 @@
+# ascent.yaml — the goal config. Version-controlled and (once you run
+# `ascent init`) human-ratified. Every gap, KPI score, verdict, and
+# recommendation traces back to a KPI defined here, or it is quarantined out
+# of the report.
+#
+# This is a sample. Copy it to ./ascent.yaml and edit, or generate one with
+# `ascent init`. Try it now:  ascent run --config examples/ascent.yaml --demo
+version: 1
+product: Sample App
+target: "web://http://localhost:3000"   # default target spec; the CLI can override
+
+# Ratification fields are stamped by `ascent init`. While empty, the drift-gate
+# stays silent (there is nothing to drift from yet).
+ratified_by: ""
+ratified_at: ""
+config_hash: ""
+
+goal:
+  id: activation
+  statement: "Let a first-time visitor book a demo in under 3 minutes."
+  success_definition: "Visitor reaches a confirmed booking screen from the landing page."
+
+milestone:
+  id: public-beta
+  name: "Public Beta"
+  unlock_criteria: "Activation is stable enough to open signups."
+  required_kpi_ids: [booking_completion, time_to_book]   # the human-chosen readiness bar
+  gate: all_required                                      # or: weighted_threshold (+ threshold)
+  threshold: 1.0
+
+kpis:
+  - id: booking_completion
+    goal_id: activation
+    name: "Booking completion rate"
+    metric: task_success_rate
+    target: 0.80
+    comparator: gte
+    unit: ratio
+    weight: 5            # 1-5; ranks recommendations and breaks verdict ties
+    source: any          # persona | journey | replay | any
+  - id: time_to_book
+    goal_id: activation
+    name: "Time to complete booking"
+    metric: time_to_complete_s
+    target: 180
+    comparator: lte
+    unit: s
+    weight: 3
+    source: persona
+  - id: funnel_dropoff
+    goal_id: activation
+    name: "Funnel drop-off rate"
+    metric: drop_off_rate
+    target: 0.30
+    comparator: lte
+    unit: ratio
+    weight: 2
+    source: replay       # measured by the replay evaluator (a later phase)
+
+personas:
+  - id: busy-founder
+    name: "Busy founder"
+    description: "Time-pressed, skims, mobile-first, abandons after two dead ends."
+    intent: "Book a demo for next week without reading docs."
+    entry_point: "/"
+    success_signal: "A confirmed booking screen is shown."
+    kpi_ids: [booking_completion, time_to_book]
+    constraints: ["impatient"]
+
+budgets:
+  max_personas: 3
+  max_steps: 40
+  max_turns: 25
+  timeout_s: 300
+
+evaluators: [persona_agent]   # journey + replay register but stay unavailable for now

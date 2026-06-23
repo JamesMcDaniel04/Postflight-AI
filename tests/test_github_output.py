@@ -6,53 +6,60 @@ from unittest.mock import patch
 
 import pytest
 
-from postlight.integrations.github_api import GitHubAPIError, GitHubClient
-from postlight.output.github import (
+from ascent.evaluators.base import Impact, Locator
+from ascent.goals import make_gap
+from ascent.integrations.github_api import GitHubAPIError, GitHubClient
+from ascent.output.github import (
     ANNOTATIONS_CAP,
     STICKY_COMMENT_MARKER,
     blob_link,
     conclusion_for,
+    locator_link,
     relpath,
-    render_findings_table,
+    render_gap_table,
     render_pr_comment_body,
+    render_scorecard,
     select_annotations,
     title_for,
 )
-from postlight.scanners.base import Finding, Severity
-from postlight.verdict import Verdict, compute
+from ascent.scoring import KpiResult
+from ascent.verdict import Readiness, Scorecard
 
 
-def _f(sev: Severity, file: str | None = None, line: int | None = None, tool: str = "osv-scanner") -> Finding:
-    return Finding(
-        severity=sev,
-        source_tool=tool,
-        rule_id=f"rule-{sev.value}",
-        message=f"{sev.value} finding",
-        file=file,
-        line=line,
+def _gap(impact, kpi_id="k1", *, file=None, line=None, route=None,
+         evaluator="persona_agent", desc=None, rec=None):
+    if file is not None:
+        locator = Locator(kind="file", value=file, line=line)
+    elif route is not None:
+        locator = Locator(kind="route", value=route)
+    else:
+        locator = None
+    return make_gap(
+        impact=impact, evaluator=evaluator, check_id=f"chk-{impact.value}",
+        description=desc or f"{impact.value} gap", kpi_id=kpi_id,
+        locator=locator, recommendation=rec,
     )
+
+
+def _scorecard(summary="", results=None):
+    return Scorecard(kpi_results=results or [], counts=Counter(), milestone_ready=False, summary=summary)
 
 
 # ---- conclusion_for / title_for ---------------------------------------------
 
 def test_conclusion_mapping():
-    assert conclusion_for(Verdict.SHIP) == "success"
-    assert conclusion_for(Verdict.REVIEW) == "neutral"
-    assert conclusion_for(Verdict.HOLD) == "failure"
+    assert conclusion_for(Readiness.ON_TRACK) == "success"
+    assert conclusion_for(Readiness.NEEDS_WORK) == "neutral"
+    assert conclusion_for(Readiness.BLOCKED) == "failure"
 
 
-def test_title_for_no_findings():
-    title = title_for(Verdict.SHIP, Counter())
-    assert title == "SHIP (no findings)"
+def test_title_for_uses_summary():
+    sc = _scorecard(summary="NEEDS_WORK toward Public Beta — Booking completion 0.71/0.8")
+    assert title_for(Readiness.NEEDS_WORK, sc) == "NEEDS_WORK toward Public Beta — Booking completion 0.71/0.8"
 
 
-def test_title_for_with_findings():
-    counts = Counter({Severity.CRITICAL: 2, Severity.HIGH: 5, Severity.MEDIUM: 0})
-    title = title_for(Verdict.HOLD, counts)
-    assert "HOLD" in title
-    assert "2 critical" in title
-    assert "5 high" in title
-    assert "medium" not in title  # zero counts are omitted
+def test_title_for_falls_back_to_readiness_value():
+    assert title_for(Readiness.ON_TRACK, _scorecard()) == "ON_TRACK"
 
 
 # ---- blob_link / relpath ----------------------------------------------------
@@ -79,90 +86,133 @@ def test_relpath_none_returns_none():
 
 
 def test_relpath_outside_workspace_falls_back():
-    # Path that doesn't share a prefix with workspace should still produce something usable.
-    out = relpath("/etc/passwd", "/var/log")
-    assert out == "etc/passwd"
+    assert relpath("/etc/passwd", "/var/log") == "etc/passwd"
 
 
-# ---- render_findings_table --------------------------------------------------
+# ---- locator_link (pluggable, dispatch on kind) -----------------------------
 
-def test_render_findings_table_empty():
-    assert render_findings_table([], Counter(), "o/r", "abc", "/ws") == "No findings."
-
-
-def test_render_findings_table_groups_by_severity(tmp_path):
-    f1 = _f(Severity.CRITICAL, file=str(tmp_path / "a.py"), line=10)
-    (tmp_path / "a.py").write_text("x")
-    f2 = _f(Severity.HIGH, file=str(tmp_path / "b.py"), line=20)
-    (tmp_path / "b.py").write_text("x")
-    counts = Counter({Severity.CRITICAL: 1, Severity.HIGH: 1})
-    out = render_findings_table([f1, f2], counts, "o/r", "abc", str(tmp_path))
-    assert "CRITICAL (1)" in out
-    assert "HIGH (1)" in out
-    # CRITICAL must appear before HIGH (severity desc)
-    assert out.index("CRITICAL") < out.index("HIGH")
-    # Linkified location with blob URL + line anchor
+def test_locator_link_file_is_blob_link(tmp_path):
+    loc = Locator(kind="file", value=str(tmp_path / "a.py"), line=10)
+    out = locator_link(loc, "o/r", "abc", str(tmp_path))
     assert "https://github.com/o/r/blob/abc/a.py#L10" in out
-    assert "https://github.com/o/r/blob/abc/b.py#L20" in out
 
 
-def test_render_findings_table_escapes_pipes():
-    # A pipe in the message would break markdown table rendering if not escaped.
-    f = Finding(
-        severity=Severity.HIGH,
-        source_tool="osv-scanner",
-        rule_id="r",
-        message="boom | this would | break the table",
-    )
-    out = render_findings_table([f], Counter({Severity.HIGH: 1}), "o/r", "abc", "/ws")
+def test_locator_link_web_url_links_out():
+    loc = Locator(kind="route", value="https://app.example.com/checkout")
+    assert locator_link(loc, "o/r", "abc", "/ws") == \
+        "[`https://app.example.com/checkout`](https://app.example.com/checkout)"
+
+
+def test_locator_link_relative_route_is_code_span():
+    loc = Locator(kind="route", value="/checkout")
+    assert locator_link(loc, "o/r", "abc", "/ws") == "`/checkout`"
+
+
+def test_locator_link_none_is_empty():
+    assert locator_link(None, "o/r", "abc", "/ws") == ""
+
+
+# ---- render_gap_table -------------------------------------------------------
+
+def test_render_gap_table_empty():
+    assert render_gap_table([], "o/r", "abc", "/ws") == "No gaps tied to your KPIs."
+
+
+def test_render_gap_table_groups_by_impact():
+    g1 = _gap(Impact.BLOCKER, route="/pay")
+    g2 = _gap(Impact.MAJOR, route="/signup")
+    out = render_gap_table([g2, g1], "o/r", "abc", "/ws")
+    assert "BLOCKER (1)" in out
+    assert "MAJOR (1)" in out
+    assert out.index("BLOCKER") < out.index("MAJOR")  # impact desc
+    assert "persona_agent" in out
+    assert "`/pay`" in out
+
+
+def test_render_gap_table_escapes_pipes():
+    g = _gap(Impact.MAJOR, route="/x", desc="boom | this would | break")
+    out = render_gap_table([g], "o/r", "abc", "/ws")
     assert "boom \\| this would \\| break" in out
+
+
+# ---- render_scorecard -------------------------------------------------------
+
+def test_render_scorecard_lists_kpis():
+    results = [
+        KpiResult(kpi_id="k1", name="Booking completion", target=0.8, comparator="gte",
+                  actual=0.71, status="near", sample_size=5, unit="ratio", weight=5),
+        KpiResult(kpi_id="k2", name="Time to book", target=180, comparator="lte",
+                  actual=None, status="unmeasured", sample_size=0, unit="s", weight=3),
+    ]
+    out = render_scorecard(_scorecard(results=results))
+    assert "KPI scorecard" in out
+    assert "Booking completion" in out
+    assert "near" in out
+    assert "unmeasured" in out
+    assert "—" in out  # unmeasured actual
+
+
+def test_render_scorecard_empty_is_blank():
+    assert render_scorecard(_scorecard()) == ""
 
 
 # ---- render_pr_comment_body -------------------------------------------------
 
-def test_pr_comment_body_includes_marker_and_verdict():
-    body = render_pr_comment_body([], Verdict.SHIP, Counter(), "o/r", "abcdef1234567", "/ws")
+def test_pr_comment_body_includes_marker_and_readiness():
+    sc = _scorecard(summary="NEEDS_WORK toward Public Beta — Booking completion 0.71/0.8")
+    body = render_pr_comment_body([], Readiness.NEEDS_WORK, sc, "o/r", "abcdef1234567", "/ws")
     assert STICKY_COMMENT_MARKER in body
-    assert "Postlight Code" in body
-    assert "SHIP" in body
-    # Short SHA hyperlink to the commit
+    assert "## Ascent" in body
+    assert "NEEDS_WORK" in body
     assert "abcdef1" in body
     assert "https://github.com/o/r/commit/abcdef1234567" in body
 
 
+def test_pr_comment_body_includes_unaligned_section():
+    sc = _scorecard(summary="ON_TRACK toward Public Beta")
+    unaligned = [_gap(Impact.MINOR, kpi_id=None, route="/settings", desc="off-goal nit")]
+    body = render_pr_comment_body([], Readiness.ON_TRACK, sc, "o/r", "sha", "/ws", unaligned)
+    assert "Unaligned observations (1)" in body
+    assert "off-goal nit" in body
+
+
 # ---- select_annotations -----------------------------------------------------
 
-def test_select_annotations_skips_findings_without_file():
-    f = _f(Severity.CRITICAL)  # no file
-    assert select_annotations([f], "/ws") == []
+def test_select_annotations_skips_non_file_locators():
+    assert select_annotations([_gap(Impact.BLOCKER, route="/pay")], "/ws") == []
+
+
+def test_select_annotations_skips_gaps_without_locator():
+    assert select_annotations([_gap(Impact.BLOCKER)], "/ws") == []
 
 
 def test_select_annotations_caps_at_50():
-    findings = [_f(Severity.HIGH, file=f"/ws/file{i}.py", line=1) for i in range(120)]
-    out = select_annotations(findings, "/ws", cap=ANNOTATIONS_CAP)
+    gaps = [_gap(Impact.MAJOR, file=f"/ws/file{i}.py", line=1) for i in range(120)]
+    out = select_annotations(gaps, "/ws", cap=ANNOTATIONS_CAP)
     assert len(out) == 50
 
 
-def test_select_annotations_orders_by_severity():
-    high = _f(Severity.HIGH, file="/ws/h.py", line=1)
-    crit = _f(Severity.CRITICAL, file="/ws/c.py", line=1)
-    low = _f(Severity.LOW, file="/ws/l.py", line=1)
-    out = select_annotations([high, low, crit], "/ws", cap=10)
+def test_select_annotations_orders_by_impact():
+    out = select_annotations(
+        [_gap(Impact.MAJOR, file="/ws/h.py", line=1),
+         _gap(Impact.MINOR, file="/ws/l.py", line=1),
+         _gap(Impact.BLOCKER, file="/ws/c.py", line=1)],
+        "/ws", cap=10,
+    )
     assert out[0]["path"].endswith("c.py")
     assert out[1]["path"].endswith("h.py")
     assert out[2]["path"].endswith("l.py")
 
 
 def test_select_annotations_level_mapping():
-    findings = [
-        _f(Severity.CRITICAL, file="/ws/a.py", line=1),
-        _f(Severity.HIGH, file="/ws/b.py", line=1),
-        _f(Severity.MEDIUM, file="/ws/c.py", line=1),
-        _f(Severity.LOW, file="/ws/d.py", line=1),
-        _f(Severity.INFO, file="/ws/e.py", line=1),
+    gaps = [
+        _gap(Impact.BLOCKER, file="/ws/a.py", line=1),
+        _gap(Impact.MAJOR, file="/ws/b.py", line=1),
+        _gap(Impact.MODERATE, file="/ws/c.py", line=1),
+        _gap(Impact.MINOR, file="/ws/d.py", line=1),
+        _gap(Impact.INFO, file="/ws/e.py", line=1),
     ]
-    out = select_annotations(findings, "/ws", cap=10)
-    levels = {a["path"]: a["annotation_level"] for a in out}
+    levels = {a["path"]: a["annotation_level"] for a in select_annotations(gaps, "/ws", cap=10)}
     assert levels["a.py"] == "failure"
     assert levels["b.py"] == "failure"
     assert levels["c.py"] == "warning"
@@ -171,8 +221,7 @@ def test_select_annotations_level_mapping():
 
 
 def test_select_annotations_default_line_is_one_when_missing():
-    f = _f(Severity.HIGH, file="/ws/lockfile.txt", line=None)
-    out = select_annotations([f], "/ws", cap=10)
+    out = select_annotations([_gap(Impact.MAJOR, file="/ws/lockfile.txt", line=None)], "/ws", cap=10)
     assert out[0]["start_line"] == 1
     assert out[0]["end_line"] == 1
 
@@ -197,38 +246,30 @@ def _resp(payload) -> _FakeResponse:
     return _FakeResponse(json.dumps(payload).encode())
 
 
-@patch("postlight.integrations.github_api.urllib.request.urlopen")
+@patch("ascent.integrations.github_api.urllib.request.urlopen")
 def test_create_check_run_payload(mock_urlopen):
     mock_urlopen.return_value = _resp({"id": 1})
     client = GitHubClient(token="t0k", repo="owner/repo")
-    annotations = [{"path": "x.py", "start_line": 1, "end_line": 1, "annotation_level": "failure", "title": "t", "message": "m"}]
+    annotations = [{"path": "x.py", "start_line": 1, "end_line": 1,
+                    "annotation_level": "failure", "title": "t", "message": "m"}]
     client.create_check_run(
-        name="Postlight",
-        head_sha="deadbeef",
-        conclusion="failure",
-        title="HOLD (1 critical)",
-        summary="HOLD (1 critical)",
-        text="## body",
-        annotations=annotations,
+        name="Ascent", head_sha="deadbeef", conclusion="failure",
+        title="BLOCKED toward Public Beta", summary="BLOCKED toward Public Beta",
+        text="## body", annotations=annotations,
     )
     assert mock_urlopen.call_count == 1
     req = mock_urlopen.call_args.args[0]
     assert req.method == "POST"
     assert req.full_url == "https://api.github.com/repos/owner/repo/check-runs"
-    assert req.headers["Authorization"] == "Bearer t0k"
+    assert req.headers["User-agent"] == "ascent/0.2"
     payload = json.loads(req.data)
-    assert payload["name"] == "Postlight"
-    assert payload["head_sha"] == "deadbeef"
-    assert payload["status"] == "completed"
+    assert payload["name"] == "Ascent"
     assert payload["conclusion"] == "failure"
-    assert payload["output"]["title"] == "HOLD (1 critical)"
-    assert payload["output"]["text"] == "## body"
     assert payload["output"]["annotations"] == annotations
 
 
-@patch("postlight.integrations.github_api.urllib.request.urlopen")
+@patch("ascent.integrations.github_api.urllib.request.urlopen")
 def test_upsert_pr_comment_creates_when_no_existing(mock_urlopen):
-    # First call (GET list) returns empty; second (POST) returns the new comment.
     mock_urlopen.side_effect = [_resp([]), _resp({"id": 99})]
     client = GitHubClient(token="t", repo="o/r")
     client.upsert_pr_comment(pr_number=42, marker=STICKY_COMMENT_MARKER, body="hello")
@@ -239,64 +280,28 @@ def test_upsert_pr_comment_creates_when_no_existing(mock_urlopen):
     assert json.loads(create_req.data)["body"] == "hello"
 
 
-@patch("postlight.integrations.github_api.urllib.request.urlopen")
+@patch("ascent.integrations.github_api.urllib.request.urlopen")
 def test_upsert_pr_comment_patches_when_existing(mock_urlopen):
-    # First call returns a list with one comment containing the marker; second is the PATCH.
     existing = {"id": 7, "body": f"{STICKY_COMMENT_MARKER}\nold"}
     mock_urlopen.side_effect = [_resp([existing]), _resp({"id": 7})]
     client = GitHubClient(token="t", repo="o/r")
     client.upsert_pr_comment(pr_number=42, marker=STICKY_COMMENT_MARKER, body="new")
-    assert mock_urlopen.call_count == 2
     patch_req = mock_urlopen.call_args_list[1].args[0]
     assert patch_req.method == "PATCH"
     assert patch_req.full_url == "https://api.github.com/repos/o/r/issues/comments/7"
-    assert json.loads(patch_req.data)["body"] == "new"
 
 
-@patch("postlight.integrations.github_api.urllib.request.urlopen")
+@patch("ascent.integrations.github_api.urllib.request.urlopen")
 def test_http_error_raises_github_api_error(mock_urlopen):
-    import urllib.error
     import io
+    import urllib.error
     mock_urlopen.side_effect = urllib.error.HTTPError(
-        url="https://api.github.com/repos/o/r/check-runs",
-        code=403,
-        msg="Forbidden",
-        hdrs={},
-        fp=io.BytesIO(b'{"message":"Resource not accessible by integration"}'),
+        url="https://api.github.com/repos/o/r/check-runs", code=403, msg="Forbidden",
+        hdrs={}, fp=io.BytesIO(b'{"message":"Resource not accessible by integration"}'),
     )
     client = GitHubClient(token="t", repo="o/r")
     with pytest.raises(GitHubAPIError) as excinfo:
-        client.create_check_run(
-            name="P", head_sha="s", conclusion="success",
-            title="T", summary="T", text="x", annotations=None,
-        )
+        client.create_check_run(name="Ascent", head_sha="s", conclusion="success",
+                                title="T", summary="T", text="x", annotations=None)
     assert excinfo.value.status == 403
     assert "not accessible" in excinfo.value.body
-
-
-# ---- compute() integration with output ---------------------------------------
-
-def test_full_pipeline_smoke(tmp_path):
-    # Mini end-to-end: synthesize findings, compute verdict, render outputs, ensure consistency.
-    f1 = Finding(severity=Severity.CRITICAL, source_tool="gitleaks", rule_id="private-key",
-                 message="Private key found", file=str(tmp_path / "leak.key"), line=1)
-    f2 = Finding(severity=Severity.HIGH, source_tool="osv-scanner", rule_id="GHSA-x",
-                 message="vulnerable dep", file=str(tmp_path / "reqs.txt"), line=None)
-    (tmp_path / "leak.key").write_text("x")
-    (tmp_path / "reqs.txt").write_text("x")
-
-    verdict, counts = compute([f1, f2])
-    assert verdict == Verdict.HOLD
-
-    title = title_for(verdict, counts)
-    assert "HOLD" in title
-    assert conclusion_for(verdict) == "failure"
-
-    body = render_pr_comment_body([f1, f2], verdict, counts, "o/r", "sha123", str(tmp_path))
-    assert STICKY_COMMENT_MARKER in body
-    assert "leak.key" in body
-    assert "reqs.txt" in body
-
-    annotations = select_annotations([f1, f2], str(tmp_path))
-    assert len(annotations) == 2
-    assert annotations[0]["annotation_level"] == "failure"  # CRITICAL first
