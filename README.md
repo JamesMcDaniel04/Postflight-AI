@@ -81,6 +81,21 @@ The action posts:
 The `permissions:` block above is required — the default `GITHUB_TOKEN` does
 not get `checks: write` and `pull-requests: write` unless declared.
 
+## Branch protection
+
+To make the verdict actually block merges, add a branch protection rule on
+`main`:
+
+1. Settings → Branches → Add branch protection rule.
+2. Branch name pattern: `main`.
+3. Check **Require status checks to pass before merging**.
+4. Search for `Postlight` in the status check list and select it.
+5. (Optional) Check **Require branches to be up to date**.
+
+GitHub only surfaces a check name in the protection UI after it has appeared
+on at least one successful run, so this configuration step waits until after
+the first PR has run the action.
+
 ## Verdict rules
 
 - `HOLD` — any finding at CRITICAL severity (CVSS ≥ 9.0, or any leaked secret).
