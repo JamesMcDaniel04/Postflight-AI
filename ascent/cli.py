@@ -71,14 +71,17 @@ def run(target: str | None, config_path: str, demo: bool) -> None:
         click.echo("error: no target given and none set in config", err=True)
         sys.exit(2)
 
+    judge = None
     if demo:
         gaps, observations = _demo_data(config)
     else:
-        gaps, observations = _run_evaluators(_build_context(config, resolved))
+        ctx = _build_context(config, resolved)
+        judge = ctx.judge
+        gaps, observations = _run_evaluators(ctx)
     q = quarantine(gaps, config)
     kpi_results = roll_observations(observations, config.kpis)
     readiness, scorecard = assess(q.aligned, config, kpi_results, unaligned_count=len(q.unaligned))
-    recommendations = recommend(q.aligned, config, kpi_results)
+    recommendations = recommend(q.aligned, config, kpi_results, judge=judge)
     render(q.aligned, readiness, scorecard, q.unaligned, recommendations)
     sys.exit(_EXIT_CODE[readiness])
 
@@ -106,7 +109,7 @@ def ci(target: str | None, config_path: str) -> None:
     q = quarantine(gaps, config)
     kpi_results = roll_observations(observations, config.kpis)
     readiness, scorecard = assess(q.aligned, config, kpi_results, unaligned_count=len(q.unaligned))
-    recommendations = recommend(q.aligned, config, kpi_results)
+    recommendations = recommend(q.aligned, config, kpi_results, judge=ctx.judge)
 
     title = title_for(readiness, scorecard)
     text_parts = [f"> :warning: {warning}" if warning else "",
@@ -161,13 +164,16 @@ def fix(target: str | None, config_path: str, out_path: str | None, yes: bool, d
     payload (kpi, goal, gaps, action) a downstream coding agent consumes.
     """
     config = _load(config_path)
+    judge = None
     if demo:
         gaps, observations = _demo_data(config)
     else:
-        gaps, observations = _run_evaluators(_build_context(config, target or config.target))
+        ctx = _build_context(config, target or config.target)
+        judge = ctx.judge
+        gaps, observations = _run_evaluators(ctx)
     q = quarantine(gaps, config)
     kpi_results = roll_observations(observations, config.kpis)
-    recommendations = recommend(q.aligned, config, kpi_results)
+    recommendations = recommend(q.aligned, config, kpi_results, judge=judge)
     if not recommendations:
         click.echo("No recommendations — nothing to fix.")
         return

@@ -32,6 +32,42 @@ class Recommendation:
     priority_score: float = 0.0
 
 
+_CONSOLIDATE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string"},
+        "action": {"type": "string"},
+        "effort_hint": {"type": "string", "enum": ["S", "M", "L"]},
+    },
+    "required": ["title", "action", "effort_hint"],
+    "additionalProperties": False,
+}
+
+
+def _consolidate(judge, kpi, gaps: list[Gap], fallback: tuple[str, str, str]) -> tuple[str, str, str]:
+    """Merge a multi-gap cluster into one recommendation, grounded strictly in
+    the cluster's evidence. Falls back to the deterministic fields on any error
+    or empty result, so the engine never depends on the LLM being reachable."""
+    evidence = "\n".join(
+        f"- [{g.impact.value}] {g.description}" + (f" (suggested: {g.recommendation})" if g.recommendation else "")
+        for g in gaps
+    )
+    prompt = (
+        f"KPI: {kpi.name} (target {kpi.comparator} {kpi.target:g}).\n"
+        f"These gaps were observed and all affect this KPI:\n{evidence}\n\n"
+        "Write ONE consolidated recommendation most likely to move this KPI toward its target. "
+        "Ground it strictly in the evidence above — do not invent new problems. "
+        "Provide a short title, a concrete action, and an effort estimate (S, M, or L)."
+    )
+    try:
+        out = judge.score("You consolidate observed gaps into one goal-linked recommendation.", prompt, _CONSOLIDATE_SCHEMA)
+    except Exception:
+        out = {}
+    if not out:
+        return fallback
+    return (out.get("title") or fallback[0], out.get("action") or fallback[1], out.get("effort_hint") or fallback[2])
+
+
 def _shortfall(result: KpiResult | None) -> float:
     """How far the KPI is from its target, normalized to ~0..1 (floored at 0.1
     so a gap on a passing KPI still ranks). Unmeasured -> 0.5 (unknown)."""
@@ -57,7 +93,11 @@ def recommend(
     aligned_gaps: list[Gap],
     config: GoalConfig,
     kpi_results: list[KpiResult],
+    judge=None,
 ) -> list[Recommendation]:
+    """Cluster aligned gaps per KPI and rank them. When ``judge`` is provided,
+    multi-gap clusters get an LLM consolidation pass (grounded in the cluster's
+    evidence); otherwise the highest-impact gap's wording is used verbatim."""
     by_kpi: dict[str, list[Gap]] = defaultdict(list)
     for gap in aligned_gaps:
         if gap.kpi_id:
@@ -70,18 +110,24 @@ def recommend(
         if kpi is None:
             continue  # belt-and-suspenders: quarantine already removed these
         rep = max(gaps, key=lambda g: (g.impact.rank, g.confidence))
+        title = rep.description
+        action = rep.recommendation or f"Address the friction blocking {kpi.name}."
+        effort = _effort({g.impact for g in gaps})
+        if judge is not None and len(gaps) >= 2:
+            title, action, effort = _consolidate(judge, kpi, gaps, (title, action, effort))
+
         mean_conf = sum(g.confidence for g in gaps) / len(gaps)
         shortfall = _shortfall(result_by_id.get(kpi_id))
         priority = kpi.weight * (rep.impact.rank + 1) * mean_conf * shortfall
         recs.append(Recommendation(
             id=f"rec-{kpi_id}",
-            title=rep.description,
-            action=rep.recommendation or f"Address the friction blocking {kpi.name}.",
+            title=title,
+            action=action,
             rationale=f"Moves {kpi.name} toward its target ({kpi.comparator} {kpi.target:g}).",
             kpi_id=kpi_id,
             goal_id=kpi.goal_id,
             gap_ids=[g.check_id for g in gaps],
-            effort_hint=_effort({g.impact for g in gaps}),
+            effort_hint=effort,
             priority_score=round(priority, 3),
         ))
 

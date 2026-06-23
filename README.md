@@ -133,8 +133,12 @@ Alignment is enforced structurally, not by convention:
   driver (`ios`/`android` declared seams), and `ascent fix` — the human-gated
   recommendation → fix-request bridge a coding agent consumes.
 
-Future: a real LLM consolidation pass over recommendation clusters (currently
-deterministic), concrete mobile drivers, and a closed `fix → re-test` loop.
+Recommendations get an optional LLM consolidation pass: when a judge is
+available, multi-gap clusters are merged into one recommendation grounded in the
+cluster's evidence; without one it falls back to deterministic clustering.
+
+Future: concrete mobile drivers (Appium) and a closed, still-human-gated
+`fix → re-test` loop.
 
 ## Tests
 
@@ -143,7 +147,7 @@ pip install -e ".[dev]"
 pytest
 ```
 
-101 tests cover the readiness engine, KPI scoring, goal-alignment quarantine and
+104 tests cover the readiness engine, KPI scoring, goal-alignment quarantine and
 drift-gate, config (de)serialization + hashing, the `init` wizard, the driver
 factory + Judge port, the persona / journey / replay evaluators, the `api://`
 driver, the recommendation engine, the `fix` command, the console/GitHub output

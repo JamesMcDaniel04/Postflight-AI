@@ -71,6 +71,38 @@ def test_no_gaps_no_recommendations():
     assert recommend([], _config(), []) == []
 
 
+def test_judge_consolidates_multi_gap_cluster():
+    from ascent.llm import RecordedJudge
+    config = _config()
+    gaps = [_gap("completion", Impact.BLOCKER, "c1", rec="wire Pay"),
+            _gap("completion", Impact.MAJOR, "c2")]
+    judge = RecordedJudge(scores=[{"title": "Fix checkout",
+                                   "action": "Repair the Pay button and its validation",
+                                   "effort_hint": "M"}])
+    recs = recommend(gaps, config, [_result("completion", 0.5, "gte", 0.8)], judge=judge)
+    assert recs[0].title == "Fix checkout"
+    assert recs[0].action == "Repair the Pay button and its validation"
+    assert recs[0].effort_hint == "M"
+    assert set(recs[0].gap_ids) == {"c1", "c2"}  # still triple-linked
+
+
+def test_judge_not_invoked_for_single_gap_cluster():
+    from ascent.llm import RecordedJudge
+    judge = RecordedJudge(scores=[{"title": "unused", "action": "unused", "effort_hint": "S"}])
+    recs = recommend([_gap("completion", Impact.MAJOR, "c1", rec="real action")],
+                     _config(), [_result("completion", 0.5, "gte", 0.8)], judge=judge)
+    assert recs[0].action == "real action"  # deterministic wording, judge untouched
+
+
+def test_consolidation_falls_back_when_judge_returns_empty():
+    from ascent.llm import RecordedJudge
+    gaps = [_gap("completion", Impact.BLOCKER, "c1", rec="wire Pay"),
+            _gap("completion", Impact.MAJOR, "c2")]
+    judge = RecordedJudge(scores=[])  # exhausted -> {} -> deterministic fallback
+    recs = recommend(gaps, _config(), [_result("completion", 0.5, "gte", 0.8)], judge=judge)
+    assert recs[0].action == "wire Pay"  # falls back to the blocker gap's recommendation
+
+
 def test_render_recommendations_markdown():
     from ascent.output.github import render_recommendations
     recs = recommend([_gap("completion", Impact.BLOCKER, "c1", rec="wire up Pay")],
