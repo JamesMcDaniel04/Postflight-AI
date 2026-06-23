@@ -1,0 +1,10 @@
+{
+  "funnel": [
+    {"step": "landing", "users": 1000},
+    {"step": "signup", "users": 700},
+    {"step": "checkout", "users": 300},
+    {"step": "confirmed", "users": 250}
+  ],
+  "errors": 50,
+  "median_time_to_complete_s": 210
+}

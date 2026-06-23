@@ -1,52 +1,72 @@
-# Postlight Code — 60-second demo script
+# Ascent — 60-second demo script
 
-Goal: a single screen recording that proves the unified-verdict + DAST wedges
-in under a minute. Use this as your prompt for the recording.
+Goal: a single screen recording that shows the goal-based QA loop — declare a
+goal, run the app, get a milestone-readiness verdict + ranked recommendations —
+in under a minute.
 
-## Setup (do this off-camera, before pressing record)
+## Setup (off-camera, before recording)
 
-1. Clone & install:
-   ```bash
-   git clone https://github.com/JamesMcDaniel04/Postflight-AI
-   cd Postflight-AI
-   python3 -m venv .venv && source .venv/bin/activate
-   pip install -e .
-   brew install osv-scanner gitleaks
-   ```
-2. Open a fresh terminal window — large font, dark theme, prompt already in
-   `Postflight-AI/`. The repo's `tests/fixtures/vulnerable-demo/` contains
-   intentional vulnerable inputs that always produce a HOLD verdict.
-3. Optional (for the DAST clip): start a vulnerable target locally.
-   ```bash
-   docker run --rm -p 3000:3000 bkimminich/juice-shop
-   ```
+```bash
+git clone https://github.com/JamesMcDaniel04/Postflight-AI
+cd Postflight-AI
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e .
+```
+
+The repo ships `examples/ascent.yaml` — a sample goal config (activation goal,
+three KPIs, a "busy founder" persona) you can run immediately with `--demo`.
+
+For the live persona run (optional, heavier): `pip install -e ".[live]"`,
+`playwright install chromium`, export `ANTHROPIC_API_KEY`, and point `--config`
+at a real `ascent.yaml` whose `target` is a running web app.
 
 ## Recording (≈60s)
 
 | Time | Action | What the viewer sees |
 |---|---|---|
-| 0–5s | Type the title in the terminal as a comment: `# Postlight Code — security verdict in <2s` | sets context |
-| 5–25s | Run `postlight scan tests/fixtures/vulnerable-demo/` | rich-formatted finding tables grouped by severity (CRITICAL / HIGH / MEDIUM / LOW), then a red HOLD verdict panel with counts |
-| 25–35s | Briefly highlight: "50+ findings across two scanners, one verdict, one exit code" | scrollback or `echo $?` showing `1` |
-| 35–55s | Run `postlight scan tests/fixtures/vulnerable-demo/ --demo-dast http://localhost:3000` (skip this segment if you don't want to spin up Juice Shop) | additional ZAP findings appear under the same verdict |
-| 55–60s | Title card or voiceover: "drop into your CI as a GitHub Action — link in description" | end frame |
+| 0–8s | Type the title as a comment: `# Ascent — is my app ready for its next milestone?` | sets context |
+| 8–20s | Run `ascent init` and breeze through the prompts (goal → KPIs → milestone → persona) | the wizard authoring + ratifying `ascent.yaml` |
+| 20–45s | Run `ascent run --config examples/ascent.yaml --demo` | the KPI scorecard, gap tables grouped by impact, the "unaligned observations" bucket, and a red **BLOCKED toward Public Beta** banner naming the blocking KPI |
+| 45–55s | Highlight the **Top recommendations** table | ranked, goal-linked fixes — each tagged with its KPI and the gaps it clears |
+| 55–60s | Voiceover: "Every gap traces to a KPI you chose. Drop it into CI as a GitHub Action." | end frame |
 
-## Talking points (for voiceover, if any)
+## Talking points
 
-- "Three open-source scanners — osv-scanner, gitleaks, ZAP — under one verdict."
-- "Same verdict on your laptop and in your PR check-run."
-- "Not trying to be Snyk. Trying to be the unified gate that decides ship/hold."
+- "Not 'does the app match its spec?' — 'is the app good enough at its goal to
+  clear the next milestone?'"
+- "Persona agents drive the real running app like live users; every gap and
+  recommendation traces back to a KPI in your version-controlled goal config."
+- "Humans stay in the loop — Ascent reports and ranks; it doesn't auto-merge."
 
-## Things NOT to demo (yet)
+## In CI (GitHub Action)
 
-- The GitHub Action posting a check-run + PR comment — pending billing fix on
-  the test repo. Re-record with that segment once unlocked; it's the strongest
-  wedge clip.
-- Inline diff annotations — same blocker.
-- Real DAST against a built-from-source target — needs sandboxing; v0.2 work.
+```yaml
+name: ascent
+on: [pull_request]
+jobs:
+  readiness:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jamesmcdaniel04/Postflight-AI@main
+        with:
+          target: web://https://staging.your-app.com
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
 
-## Distribution
+The action posts a milestone-readiness check-run (readiness as the conclusion)
+and a sticky PR comment with the KPI scorecard, ranked recommendations, and the
+gap report.
 
-Drop the recording into wedge conversations as the answer to "what is this?"
-Don't link to a landing page (we don't have one and the spike doesn't need one).
-A 60s clip + this README is the whole pitch surface.
+## Not yet in the demo
+
+- A real persona run against a live web app — needs `[live]` deps, a browser,
+  and an API key; show the `--demo` path for a deterministic recording.
+- The `journey` and `replay` evaluators (scripted journeys + analytics) — they
+  register but stay inactive until a journeys file / analytics export is present.

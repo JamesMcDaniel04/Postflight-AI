@@ -118,6 +118,19 @@ def render_unaligned(gaps: list[Gap]) -> str:
     return "\n".join(lines)
 
 
+def render_recommendations(recommendations: list, top: int = 10) -> str:
+    if not recommendations:
+        return ""
+    lines = ["### Top recommendations", ""]
+    for i, rec in enumerate(recommendations[:top], start=1):
+        lines.append(
+            f"{i}. **[{rec.kpi_id}]** {_md_escape(rec.action)} "
+            f"_(clears {len(rec.gap_ids)} gap(s), effort {rec.effort_hint})_"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
 def render_pr_comment_body(
     gaps: list[Gap],
     readiness: Readiness,
@@ -126,6 +139,7 @@ def render_pr_comment_body(
     sha: str,
     workspace: str,
     unaligned: list[Gap] | None = None,
+    recommendations: list | None = None,
 ) -> str:
     parts = [
         STICKY_COMMENT_MARKER,
@@ -137,6 +151,7 @@ def render_pr_comment_body(
         scorecard.summary,
         "",
         render_scorecard(scorecard),
+        render_recommendations(recommendations or []),
         render_gap_table(gaps, repo, sha, workspace),
     ]
     unaligned_md = render_unaligned(unaligned or [])

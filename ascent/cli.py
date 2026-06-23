@@ -8,26 +8,32 @@ from pathlib import Path
 import click
 
 from .alignment import drift_check, quarantine
+from .drivers.factory import make_driver
 from .evaluators.base import EvaluatorContext, Impact, Locator
-from .evaluators.stub import StubEvaluator
+from .evaluators.journey import JourneyEvaluator
+from .evaluators.persona_agent import PersonaAgentEvaluator
+from .evaluators.replay import ReplayEvaluator
 from .goals import GoalConfig, load_config, make_gap, make_observation
 from .integrations.github_api import GitHubAPIError, GitHubClient
+from .llm import make_judge
 from .output.console import render
 from .output.github import (
     STICKY_COMMENT_MARKER,
     conclusion_for,
     render_gap_table,
     render_pr_comment_body,
+    render_recommendations,
     render_scorecard,
     select_annotations,
     title_for,
 )
+from .recommend import recommend
 from .scoring import roll_observations
 from .verdict import Readiness, assess
 
-# Phase 0: only the placeholder is registered. PersonaAgentEvaluator (real) and
-# the Journey/Replay evaluators plug in here in later phases.
-EVALUATORS: list[type] = [StubEvaluator]
+# The hybrid evaluator set — all implement one protocol and emit one Gap shape,
+# so they merge into a single report. Journey/Replay self-gate on config presence.
+EVALUATORS: list[type] = [PersonaAgentEvaluator, JourneyEvaluator, ReplayEvaluator]
 
 _EXIT_CODE = {Readiness.ON_TRACK: 0, Readiness.NEEDS_WORK: 0, Readiness.BLOCKED: 1}
 
@@ -41,6 +47,16 @@ def cli() -> None:
 
 
 @cli.command()
+@click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True,
+              metavar="PATH", help="Where to write the goal config.")
+@click.option("--force", is_flag=True, help="Overwrite an existing config without confirming.")
+def init(config_path: str, force: bool) -> None:
+    """Interactively author and ratify a goal config (ascent.yaml)."""
+    from .wizard import run_init
+    run_init(config_path, force=force)
+
+
+@cli.command()
 @click.argument("target", required=False)
 @click.option("--config", "config_path", default=DEFAULT_CONFIG, show_default=True,
               metavar="PATH", help="Path to the goal config.")
@@ -50,16 +66,20 @@ def run(target: str | None, config_path: str, demo: bool) -> None:
     """Run evaluators against TARGET and report milestone readiness."""
     config = _load(config_path)
     _warn_on_drift(config)
-    ctx = EvaluatorContext(config=config, target=target or config.target)
-    if not ctx.target:
+    resolved = target or config.target
+    if not resolved and not demo:
         click.echo("error: no target given and none set in config", err=True)
         sys.exit(2)
 
-    gaps, observations = _demo_data(config) if demo else _run_evaluators(ctx)
+    if demo:
+        gaps, observations = _demo_data(config)
+    else:
+        gaps, observations = _run_evaluators(_build_context(config, resolved))
     q = quarantine(gaps, config)
     kpi_results = roll_observations(observations, config.kpis)
     readiness, scorecard = assess(q.aligned, config, kpi_results, unaligned_count=len(q.unaligned))
-    render(q.aligned, readiness, scorecard, q.unaligned)
+    recommendations = recommend(q.aligned, config, kpi_results)
+    render(q.aligned, readiness, scorecard, q.unaligned, recommendations)
     sys.exit(_EXIT_CODE[readiness])
 
 
@@ -81,15 +101,17 @@ def ci(target: str | None, config_path: str) -> None:
     warning = drift_check(config)
     if warning:
         click.echo(f"[warn] {warning}", err=True)
-    ctx = EvaluatorContext(config=config, target=target or config.target)
+    ctx = _build_context(config, target or config.target)
     gaps, observations = _run_evaluators(ctx)
     q = quarantine(gaps, config)
     kpi_results = roll_observations(observations, config.kpis)
     readiness, scorecard = assess(q.aligned, config, kpi_results, unaligned_count=len(q.unaligned))
+    recommendations = recommend(q.aligned, config, kpi_results)
 
     title = title_for(readiness, scorecard)
     text_parts = [f"> :warning: {warning}" if warning else "",
                   render_scorecard(scorecard),
+                  render_recommendations(recommendations),
                   render_gap_table(q.aligned, repo, sha, workspace)]
     text = "\n".join(p for p in text_parts if p)
     annotations = select_annotations(q.aligned, workspace)
@@ -112,7 +134,9 @@ def ci(target: str | None, config_path: str) -> None:
 
     pr_number = _pr_number_from_event()
     if pr_number is not None:
-        body = render_pr_comment_body(q.aligned, readiness, scorecard, repo, sha, workspace, q.unaligned)
+        body = render_pr_comment_body(
+            q.aligned, readiness, scorecard, repo, sha, workspace, q.unaligned, recommendations
+        )
         click.echo(f"[post] sticky comment on PR #{pr_number}", err=True)
         try:
             client.upsert_pr_comment(pr_number=pr_number, marker=STICKY_COMMENT_MARKER, body=body)
@@ -120,6 +144,70 @@ def ci(target: str | None, config_path: str) -> None:
             click.echo(f"warn: failed to upsert PR comment: {err}", err=True)
 
     sys.exit(_EXIT_CODE[readiness])
+
+
+@cli.command()
+@click.argument("target", required=False)
+@click.option("--config", "config_path", default=DEFAULT_CONFIG, metavar="PATH",
+              help="Path to the goal config.")
+@click.option("--out", "out_path", default=None, metavar="PATH",
+              help="Write approved fix requests as JSON here (else printed).")
+@click.option("--yes", is_flag=True, help="Approve all recommendations non-interactively.")
+@click.option("--demo", is_flag=True, hidden=True)
+def fix(target: str | None, config_path: str, out_path: str | None, yes: bool, demo: bool) -> None:
+    """Review ranked recommendations and emit human-approved fix requests.
+
+    Ascent does NOT modify code — each approved request is the goal-linked
+    payload (kpi, goal, gaps, action) a downstream coding agent consumes.
+    """
+    config = _load(config_path)
+    if demo:
+        gaps, observations = _demo_data(config)
+    else:
+        gaps, observations = _run_evaluators(_build_context(config, target or config.target))
+    q = quarantine(gaps, config)
+    kpi_results = roll_observations(observations, config.kpis)
+    recommendations = recommend(q.aligned, config, kpi_results)
+    if not recommendations:
+        click.echo("No recommendations — nothing to fix.")
+        return
+
+    approved = []
+    for rec in recommendations:
+        click.echo(
+            f"\n[{rec.kpi_id}] {rec.title}\n"
+            f"  action: {rec.action}\n"
+            f"  clears: {', '.join(rec.gap_ids)} (effort {rec.effort_hint}, priority {rec.priority_score})"
+        )
+        if yes or click.confirm("Approve this fix?", default=False):
+            approved.append(_fix_request(rec, config))
+
+    click.echo(
+        f"\n{len(approved)} fix request(s) approved. Ascent does not modify code — "
+        "hand these to a coding agent or apply them yourself."
+    )
+    if not approved:
+        return
+    payload = json.dumps(approved, indent=2)
+    if out_path:
+        Path(out_path).write_text(payload)
+        click.echo(f"Wrote {out_path}.")
+    else:
+        click.echo(payload)
+
+
+def _fix_request(rec, config: GoalConfig) -> dict:
+    return {
+        "id": rec.id,
+        "kpi_id": rec.kpi_id,
+        "goal_id": rec.goal_id,
+        "goal": config.goal.statement,
+        "action": rec.action,
+        "rationale": rec.rationale,
+        "gap_ids": rec.gap_ids,
+        "effort_hint": rec.effort_hint,
+        "priority_score": rec.priority_score,
+    }
 
 
 def _load(config_path: str) -> GoalConfig:
@@ -140,6 +228,18 @@ def _warn_on_drift(config: GoalConfig) -> None:
     warning = drift_check(config)
     if warning:
         click.echo(f"[warn] {warning}", err=True)
+
+
+def _build_context(config: GoalConfig, target: str) -> EvaluatorContext:
+    ctx = EvaluatorContext(config=config, target=target)
+    try:
+        ctx.driver = make_driver(target)
+    except (ValueError, ImportError) as err:
+        click.echo(f"[skip] no driver for target {target!r}: {err}", err=True)
+    ctx.judge = make_judge(config)
+    if ctx.judge is None:
+        click.echo("[skip] no LLM judge available (set ANTHROPIC_API_KEY and install 'ascent[live]')", err=True)
+    return ctx
 
 
 def _run_evaluators(ctx: EvaluatorContext):

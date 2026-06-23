@@ -15,6 +15,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
+# The live-user evaluator stack. Optional so the core engine + CI run without it;
+# the persona evaluator reports itself unavailable when these aren't installed.
+live = ["anthropic>=0.40", "playwright>=1.40"]
 
 [project.scripts]
 ascent = "ascent.cli:cli"

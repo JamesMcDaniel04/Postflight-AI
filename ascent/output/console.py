@@ -85,11 +85,24 @@ def _gap_tables(gaps: list[Gap], console: Console) -> None:
         console.print(table)
 
 
+def _recommendations_table(recommendations: list, top: int = 5) -> Table:
+    table = Table(title="Top recommendations", title_style="bold", show_lines=False)
+    table.add_column("#", no_wrap=True)
+    table.add_column("KPI", no_wrap=True)
+    table.add_column("Recommendation")
+    table.add_column("Clears", justify="right", no_wrap=True)
+    table.add_column("Effort", no_wrap=True)
+    for i, rec in enumerate(recommendations[:top], start=1):
+        table.add_row(str(i), rec.kpi_id, rec.action, str(len(rec.gap_ids)), rec.effort_hint)
+    return table
+
+
 def render(
     gaps: list[Gap],
     readiness: Readiness,
     scorecard: Scorecard,
     unaligned: list[Gap] | None = None,
+    recommendations: list | None = None,
 ) -> None:
     console = Console()
 
@@ -100,6 +113,9 @@ def render(
         _gap_tables(gaps, console)
     else:
         console.print("[green]No gaps tied to your KPIs.[/green]")
+
+    if recommendations:
+        console.print(_recommendations_table(recommendations))
 
     unaligned = unaligned or []
     if unaligned:

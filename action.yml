@@ -1,22 +1,29 @@
-name: 'Postlight Code'
+name: 'Ascent'
 description: >-
-  Unified security verdict (SHIP / REVIEW / HOLD) for code repos. Runs
-  osv-scanner and gitleaks, posts a check-run with inline annotations and a
-  sticky PR comment. The consuming workflow needs `checks: write` and
-  `pull-requests: write` permissions.
+  Goal-based app QA. Runs persona-driven live-user evaluators against your app,
+  scores the KPIs in your goal config, and posts a milestone-readiness check-run
+  with a sticky PR comment (scorecard + ranked, goal-linked recommendations).
+  The consuming workflow needs `checks: write` and `pull-requests: write`, and
+  should pass `ANTHROPIC_API_KEY` (and `GITHUB_TOKEN`) via the step `env`.
 author: 'James McDaniel'
 branding:
-  icon: 'shield'
-  color: 'blue'
+  icon: 'trending-up'
+  color: 'green'
 
 inputs:
-  path:
-    description: 'Path to scan (relative to GITHUB_WORKSPACE).'
+  target:
+    description: 'Target spec (web://… | api://… | ios://… | android://…). Overrides the config target.'
     required: false
-    default: '.'
+    default: ''
+  config:
+    description: 'Path to the goal config, relative to the workspace.'
+    required: false
+    default: 'ascent.yaml'
 
 runs:
   using: 'docker'
   image: 'Dockerfile'
   args:
-    - ${{ inputs.path }}
+    - ${{ inputs.target }}
+    - '--config'
+    - ${{ inputs.config }}
