@@ -17,7 +17,7 @@ A journey in the config:
 
 from __future__ import annotations
 
-from ..goals import GoalConfig, make_gap, make_observation
+from ..goals import GoalConfig, Journey, make_gap, make_observation
 from .base import EvaluationResult, EvaluatorContext, Impact
 
 _SCORE_SCHEMA = {
@@ -34,8 +34,8 @@ _SCORE_SCHEMA = {
 class JourneyEvaluator:
     name = "journey"
 
-    def _journeys(self, config: GoalConfig) -> list[dict]:
-        return (config.extra.get("journeys") or []) if config.extra else []
+    def _journeys(self, config: GoalConfig) -> list[Journey]:
+        return config.journeys
 
     def is_available(self, ctx: EvaluatorContext) -> bool:
         driver = ctx.driver
@@ -52,18 +52,18 @@ class JourneyEvaluator:
             self._run_journey(ctx, journey, result)
         return result
 
-    def _run_journey(self, ctx: EvaluatorContext, journey: dict, result: EvaluationResult) -> None:
+    def _run_journey(self, ctx: EvaluatorContext, journey: Journey, result: EvaluationResult) -> None:
         driver, judge = ctx.driver, ctx.judge
-        kpi_id = journey.get("kpi_id")
+        kpi_id = journey.kpi_id
         try:
-            driver.start(journey.get("entry_point", ""))
-            for step in journey.get("steps", []):
+            driver.start(journey.entry_point)
+            for step in journey.steps:
                 driver.act(step)
             obs = driver.observe()
         except Exception as err:
             result.gaps.append(make_gap(
-                impact=Impact.BLOCKER, evaluator=self.name, check_id=f"journey-error-{journey.get('id')}",
-                description=f"Journey '{journey.get('name')}' failed to run: {err}", kpi_id=kpi_id,
+                impact=Impact.BLOCKER, evaluator=self.name, check_id=f"journey-error-{journey.id}",
+                description=f"Journey '{journey.name}' failed to run: {err}", kpi_id=kpi_id,
             ))
             return
         finally:
@@ -71,7 +71,7 @@ class JourneyEvaluator:
 
         verdict = judge.score(
             "You score whether a scripted user journey reached its success signal.",
-            f"Journey: {journey.get('name')}\nSuccess signal: {journey.get('success_signal')}\n"
+            f"Journey: {journey.name}\nSuccess signal: {journey.success_signal}\n"
             f"Final page — URL: {obs.url}, title: {obs.title}\nVisible text:\n{obs.text[:1000]}\n\n"
             "Did the journey reach its success signal?",
             _SCORE_SCHEMA,
@@ -83,8 +83,8 @@ class JourneyEvaluator:
             )
         if not passed:
             result.gaps.append(make_gap(
-                impact=Impact.MAJOR, evaluator=self.name, check_id=f"journey-failed-{journey.get('id')}",
-                description=f"Journey '{journey.get('name')}' did not reach: {journey.get('success_signal')}.",
+                impact=Impact.MAJOR, evaluator=self.name, check_id=f"journey-failed-{journey.id}",
+                description=f"Journey '{journey.name}' did not reach: {journey.success_signal}.",
                 kpi_id=kpi_id, locator=driver.current_locator() if hasattr(driver, "current_locator") else None,
                 evidence=[verdict.get("reason", "")],
                 recommendation="Fix the step where the scripted journey stops short of its success signal.",

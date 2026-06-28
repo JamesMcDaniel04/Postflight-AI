@@ -4,13 +4,13 @@ import os
 
 from ascent.evaluators.base import EvaluatorContext, Impact
 from ascent.evaluators.replay import ReplayEvaluator
-from ascent.goals import KPI, Goal, GoalConfig, Milestone
+from ascent.goals import KPI, Goal, GoalConfig, Milestone, Replay
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "analytics.json")
 
 
 def _config(export_path: str | None) -> GoalConfig:
-    extra = {"replay": {"export_path": export_path}} if export_path is not None else {}
+    replay = Replay(export_path=export_path) if export_path is not None else None
     return GoalConfig(
         version=1, product="P", target="web://x", goal=Goal(id="activation", statement="s"),
         milestone=Milestone(id="m", name="Beta"),
@@ -24,7 +24,7 @@ def _config(export_path: str | None) -> GoalConfig:
             KPI(id="speed", goal_id="activation", name="Speed", metric="time_to_complete_s",
                 target=180, comparator="lte", source="replay"),
         ],
-        extra=extra,
+        replay=replay,
     )
 
 

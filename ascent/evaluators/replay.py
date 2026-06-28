@@ -24,7 +24,7 @@ class ReplayEvaluator:
     name = "replay"
 
     def _export_path(self, config: GoalConfig) -> str | None:
-        return (config.extra.get("replay", {}) or {}).get("export_path") if config.extra else None
+        return config.replay.export_path if config.replay else None
 
     def is_available(self, ctx: EvaluatorContext) -> bool:
         path = self._export_path(ctx.config)

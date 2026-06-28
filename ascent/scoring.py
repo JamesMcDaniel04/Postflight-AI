@@ -55,13 +55,30 @@ def _classify(actual: float, kpi: KPI, sample_size: int, min_sample_size: int) -
     return "fail"
 
 
+# Which source kind each evaluator counts as (a KPI's `source` selects its
+# evaluator). Unknown evaluators (e.g. the demo injector) count for any source.
+_SOURCE_KIND = {"persona_agent": "persona", "journey": "journey", "replay": "replay"}
+# Trust ground-truth analytics over simulated journeys over a single persona run
+# when several measure the same KPI — folded into the weighted mean only.
+_TRUST = {"replay": 3, "journey": 2, "persona_agent": 1}
+
+
+def _matches_source(evaluator: str, kpi_source: str) -> bool:
+    if kpi_source == "any":
+        return True
+    kind = _SOURCE_KIND.get(evaluator)
+    return kind is None or kind == kpi_source
+
+
 def roll_observations(
     observations: list[KpiObservation],
     kpis: list[KPI],
     min_sample_size: int = 1,
 ) -> list[KpiResult]:
-    """One KpiResult per configured KPI. KPIs with no observations come back
-    ``unmeasured`` — a first-class state, never silently passed or failed."""
+    """One KpiResult per configured KPI. Only observations whose evaluator
+    matches the KPI's ``source`` count; when several sources measure a KPI,
+    replay outweighs journey outweighs persona. KPIs with no matching
+    observations come back ``unmeasured``."""
 
     by_kpi: dict[str, list[KpiObservation]] = defaultdict(list)
     for obs in observations:
@@ -69,7 +86,7 @@ def roll_observations(
 
     results: list[KpiResult] = []
     for kpi in kpis:
-        obs = by_kpi.get(kpi.id, [])
+        obs = [o for o in by_kpi.get(kpi.id, []) if _matches_source(o.evaluator, kpi.source)]
         if not obs:
             results.append(
                 KpiResult(
@@ -79,14 +96,15 @@ def roll_observations(
                 )
             )
             continue
-        weight_total = sum(max(o.sample_weight, 1) for o in obs)
-        actual = sum(o.value * max(o.sample_weight, 1) for o in obs) / weight_total
+        sample_total = sum(max(o.sample_weight, 1) for o in obs)
+        trust_total = sum(max(o.sample_weight, 1) * _TRUST.get(o.evaluator, 1) for o in obs)
+        actual = sum(o.value * max(o.sample_weight, 1) * _TRUST.get(o.evaluator, 1) for o in obs) / trust_total
         results.append(
             KpiResult(
                 kpi_id=kpi.id, name=kpi.name, target=kpi.target,
                 comparator=kpi.comparator, actual=actual,
-                status=_classify(actual, kpi, weight_total, min_sample_size),
-                sample_size=weight_total, unit=kpi.unit, weight=kpi.weight,
+                status=_classify(actual, kpi, sample_total, min_sample_size),
+                sample_size=sample_total, unit=kpi.unit, weight=kpi.weight,
                 contributing_evaluators=sorted({o.evaluator for o in obs}),
             )
         )

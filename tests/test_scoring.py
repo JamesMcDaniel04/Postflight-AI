@@ -67,3 +67,31 @@ def test_contributing_evaluators_recorded():
     obs = [_obs(0.9, evaluator="persona_agent"), _obs(0.85, evaluator="replay")]
     [result] = roll_observations(obs, [_kpi()])
     assert result.contributing_evaluators == ["persona_agent", "replay"]
+
+
+# ---- KPI.source routing + cross-evaluator trust ------------------------------
+
+def _kpi_src(source):
+    return KPI(id="k", goal_id="g", name="K", metric="task_success_rate", target=0.8, source=source)
+
+
+def test_source_routing_ignores_mismatched_evaluator():
+    # a persona-only KPI must ignore a replay observation
+    obs = [make_observation(kpi_id="k", value=0.95, evaluator="replay")]
+    [result] = roll_observations(obs, [_kpi_src("persona")])
+    assert result.status == "unmeasured"
+
+
+def test_source_any_counts_every_evaluator():
+    obs = [make_observation(kpi_id="k", value=0.95, evaluator="replay")]
+    [result] = roll_observations(obs, [_kpi_src("any")])
+    assert result.status == "pass"
+
+
+def test_replay_outweighs_persona_on_shared_kpi():
+    # persona says 0.4 (fail), replay says 1.0 (pass); replay's higher trust wins
+    obs = [make_observation(kpi_id="k", value=0.4, evaluator="persona_agent"),
+           make_observation(kpi_id="k", value=1.0, evaluator="replay")]
+    [result] = roll_observations(obs, [_kpi_src("any")])
+    assert round(result.actual, 3) == 0.85  # (0.4*1 + 1.0*3) / 4
+    assert result.status == "pass"

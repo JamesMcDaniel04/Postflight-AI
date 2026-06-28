@@ -3,7 +3,7 @@ from __future__ import annotations
 from ascent.drivers.base import ActionResult, Element, Observation
 from ascent.evaluators.base import EvaluatorContext, Impact, Locator
 from ascent.evaluators.journey import JourneyEvaluator
-from ascent.goals import KPI, Goal, GoalConfig, Milestone
+from ascent.goals import KPI, Goal, GoalConfig, Journey, Milestone
 from ascent.llm import RecordedJudge
 
 
@@ -39,11 +39,11 @@ def _config():
         version=1, product="P", target="web://x", goal=Goal(id="g", statement="s"),
         milestone=Milestone(id="m", name="Beta", required_kpi_ids=["completion"]),
         kpis=[KPI(id="completion", goal_id="g", name="Completion", metric="task_success_rate", target=0.8)],
-        extra={"journeys": [{
-            "id": "book", "name": "Book a demo", "kpi_id": "completion",
-            "success_signal": "a confirmation screen is shown",
-            "steps": [{"type": "click", "ref": "0"}, {"type": "type", "ref": "1", "text": "x@y.com"}],
-        }]},
+        journeys=[Journey(
+            id="book", name="Book a demo", kpi_id="completion",
+            success_signal="a confirmation screen is shown",
+            steps=[{"type": "click", "ref": "0"}, {"type": "type", "ref": "1", "text": "x@y.com"}],
+        )],
     )
 
 
@@ -56,7 +56,7 @@ def test_is_available_requires_journeys_driver_and_judge():
     cfg = _config()
     assert ev.is_available(_ctx(cfg, RecordedJudge(), FakeDriver())) is True
     no_journeys = _config()
-    no_journeys.extra = {}
+    no_journeys.journeys = []
     assert ev.is_available(_ctx(no_journeys, RecordedJudge(), FakeDriver())) is False
     assert ev.is_available(_ctx(cfg, None, FakeDriver())) is False
 

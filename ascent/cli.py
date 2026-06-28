@@ -79,7 +79,7 @@ def run(target: str | None, config_path: str, demo: bool) -> None:
         judge = ctx.judge
         gaps, observations = _run_evaluators(ctx)
     q = quarantine(gaps, config)
-    kpi_results = roll_observations(observations, config.kpis)
+    kpi_results = roll_observations(observations, config.kpis, min_sample_size=config.budgets.min_sample_size)
     readiness, scorecard = assess(q.aligned, config, kpi_results, unaligned_count=len(q.unaligned))
     recommendations = recommend(q.aligned, config, kpi_results, judge=judge)
     render(q.aligned, readiness, scorecard, q.unaligned, recommendations)
@@ -107,7 +107,7 @@ def ci(target: str | None, config_path: str) -> None:
     ctx = _build_context(config, target or config.target)
     gaps, observations = _run_evaluators(ctx)
     q = quarantine(gaps, config)
-    kpi_results = roll_observations(observations, config.kpis)
+    kpi_results = roll_observations(observations, config.kpis, min_sample_size=config.budgets.min_sample_size)
     readiness, scorecard = assess(q.aligned, config, kpi_results, unaligned_count=len(q.unaligned))
     recommendations = recommend(q.aligned, config, kpi_results, judge=ctx.judge)
 
@@ -172,7 +172,7 @@ def fix(target: str | None, config_path: str, out_path: str | None, yes: bool, d
         judge = ctx.judge
         gaps, observations = _run_evaluators(ctx)
     q = quarantine(gaps, config)
-    kpi_results = roll_observations(observations, config.kpis)
+    kpi_results = roll_observations(observations, config.kpis, min_sample_size=config.budgets.min_sample_size)
     recommendations = recommend(q.aligned, config, kpi_results, judge=judge)
     if not recommendations:
         click.echo("No recommendations — nothing to fix.")
@@ -249,8 +249,12 @@ def _build_context(config: GoalConfig, target: str) -> EvaluatorContext:
 
 
 def _run_evaluators(ctx: EvaluatorContext):
+    # config.evaluators selects which evaluators run; empty means all registered.
+    selected = set(ctx.config.evaluators)
     gaps, observations = [], []
     for evaluator_cls in EVALUATORS:
+        if selected and evaluator_cls.name not in selected:
+            continue
         evaluator = evaluator_cls()
         if not evaluator.is_available(ctx):
             click.echo(f"[skip] {evaluator.name} not available", err=True)

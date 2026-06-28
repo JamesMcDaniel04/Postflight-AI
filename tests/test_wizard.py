@@ -69,8 +69,10 @@ _INIT_INPUT = "\n".join([
     "dashboard appears",            # success signal
     "all",                          # persona KPIs
     "n",                            # add another persona? no
-    # budgets
-    "3", "40", "25", "300",
+    # budgets (max_personas, max_steps, max_turns, timeout_s, min_sample_size)
+    "3", "40", "25", "300", "1",
+    "n",                            # enable analytics replay? no
+    "n",                            # add a scripted journey? no
     "qa@example.com",               # ratify as
     "y",                            # confirm ratify
 ]) + "\n"

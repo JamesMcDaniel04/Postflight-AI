@@ -9,6 +9,8 @@ intent went unmet.
 
 from __future__ import annotations
 
+import time
+
 from ..goals import GoalConfig, Persona, make_gap, make_observation
 from .base import EvaluationResult, EvaluatorContext, Impact
 
@@ -70,18 +72,25 @@ class PersonaAgentEvaluator:
         budget = ctx.config.budgets
         finished = success = False
         agent_gaps: list[dict] = []
-        steps = 0
-        for steps in range(1, budget.max_steps + 1):
+        turns = actions = 0
+        start = time.monotonic()
+        # Bounded by LLM turns, driver actions, and a wall-clock timeout so a
+        # stuck live run can never hang.
+        while (turns < budget.max_turns
+               and actions < budget.max_steps
+               and (time.monotonic() - start) < budget.timeout_s):
             obs = driver.observe()
             transcript.append({"role": "user", "content": self._render_obs(obs)})
+            turns += 1
             action = judge.next_action(system, transcript)
             transcript.append({"role": "assistant", "content": f"{action.kind}: {action.reasoning}"})
             if action.kind == "finish":
                 finished, success, agent_gaps = True, bool(action.success), action.gaps
                 break
             res = driver.act(self._to_driver_action(action))
+            actions += 1
             transcript.append({"role": "user", "content": f"result: {'ok' if res.ok else 'failed — ' + res.detail}"})
-        return finished, success, agent_gaps, steps
+        return finished, success, agent_gaps, turns
 
     def _emit_observations(self, config: GoalConfig, persona: Persona, driver, succeeded: bool, result: EvaluationResult) -> None:
         elapsed = driver.metrics().get("elapsed_s")

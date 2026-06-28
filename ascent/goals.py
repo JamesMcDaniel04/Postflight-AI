@@ -77,6 +77,30 @@ class Budgets:
     max_steps: int = 40
     max_turns: int = 25
     timeout_s: int = 300
+    # A KPI needs at least this many samples to be certified "pass"; below it,
+    # a passing value is capped at "near" so one flaky run can't flip the verdict.
+    min_sample_size: int = 1
+
+
+@dataclass
+class Journey:
+    """A scripted user journey for the JourneyEvaluator. ``steps`` are driver
+    actions ({type: click|type|navigate, ref/text/url})."""
+
+    id: str
+    name: str
+    kpi_id: str
+    success_signal: str = ""
+    entry_point: str = ""
+    steps: list[dict] = field(default_factory=list)
+
+
+@dataclass
+class Replay:
+    """Points the ReplayEvaluator at an analytics/session funnel export."""
+
+    export_path: str
+    source: str = "csv"  # posthog | amplitude | csv
 
 
 @dataclass
@@ -90,10 +114,12 @@ class GoalConfig:
     personas: list[Persona] = field(default_factory=list)
     budgets: Budgets = field(default_factory=Budgets)
     evaluators: list[str] = field(default_factory=lambda: ["persona_agent"])
+    journeys: list[Journey] = field(default_factory=list)
+    replay: Replay | None = None
     ratified_by: str = ""
     ratified_at: str = ""
     config_hash: str = ""
-    # Unmapped top-level keys (judge:, replay:, ...) preserved across a round-trip.
+    # Unmapped top-level keys (judge:, ...) preserved across a round-trip.
     extra: dict = field(default_factory=dict)
 
     def kpi_ids(self) -> set[str]:
@@ -161,6 +187,8 @@ def config_hash(config: GoalConfig) -> str:
         "milestone": asdict(config.milestone),
         "kpis": [asdict(k) for k in sorted(config.kpis, key=lambda k: k.id)],
         "personas": [asdict(p) for p in sorted(config.personas, key=lambda p: p.id)],
+        "journeys": [asdict(j) for j in sorted(config.journeys, key=lambda j: j.id)],
+        "replay": asdict(config.replay) if config.replay else None,
     }
     blob = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return "sha256:" + hashlib.sha256(blob.encode("utf-8")).hexdigest()
@@ -170,7 +198,7 @@ def config_hash(config: GoalConfig) -> str:
 
 _TOP_KEYS = {
     "version", "product", "target", "goal", "milestone", "kpis", "personas",
-    "budgets", "evaluators", "ratified_by", "ratified_at", "config_hash",
+    "budgets", "evaluators", "journeys", "replay", "ratified_by", "ratified_at", "config_hash",
 }
 
 
@@ -180,6 +208,8 @@ def _from_dict(data: dict) -> GoalConfig:
     kpis = [KPI(**k) for k in data.get("kpis", [])]
     personas = [Persona(**p) for p in data.get("personas", [])]
     budgets = Budgets(**data["budgets"]) if data.get("budgets") else Budgets()
+    journeys = [Journey(**j) for j in data.get("journeys", [])]
+    replay = Replay(**data["replay"]) if data.get("replay") else None
     extra = {k: v for k, v in data.items() if k not in _TOP_KEYS}
     return GoalConfig(
         version=int(data.get("version", 1)),
@@ -191,6 +221,8 @@ def _from_dict(data: dict) -> GoalConfig:
         personas=personas,
         budgets=budgets,
         evaluators=data.get("evaluators", ["persona_agent"]),
+        journeys=journeys,
+        replay=replay,
         ratified_by=data.get("ratified_by", ""),
         ratified_at=data.get("ratified_at", ""),
         config_hash=data.get("config_hash", ""),
@@ -213,6 +245,10 @@ def to_dict(config: GoalConfig) -> dict:
         "budgets": asdict(config.budgets),
         "evaluators": list(config.evaluators),
     }
+    if config.journeys:
+        out["journeys"] = [asdict(j) for j in config.journeys]
+    if config.replay is not None:
+        out["replay"] = asdict(config.replay)
     out.update(config.extra)
     return out
 

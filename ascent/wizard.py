@@ -24,8 +24,10 @@ from .goals import (
     Budgets,
     Goal,
     GoalConfig,
+    Journey,
     Milestone,
     Persona,
+    Replay,
     config_hash,
     dump_config,
     load_config,
@@ -151,10 +153,36 @@ def _prompt_budgets(default: Budgets) -> Budgets:
     click.echo("\n— Budgets — (per evaluator)")
     return Budgets(
         max_personas=click.prompt("  Max personas per run", type=int, default=default.max_personas),
-        max_steps=click.prompt("  Max steps per persona", type=int, default=default.max_steps),
+        max_steps=click.prompt("  Max driver actions per persona", type=int, default=default.max_steps),
         max_turns=click.prompt("  Max LLM turns per persona", type=int, default=default.max_turns),
-        timeout_s=click.prompt("  Timeout per evaluator (s)", type=int, default=default.timeout_s),
+        timeout_s=click.prompt("  Timeout per persona (s)", type=int, default=default.timeout_s),
+        min_sample_size=click.prompt("  Min samples to certify a KPI 'pass'", type=int,
+                                     default=default.min_sample_size),
     )
+
+
+def _prompt_integrations(kpis: list[KPI]) -> tuple[list[Journey], Replay | None]:
+    """Optionally configure the analytics-replay and scripted-journey evaluators."""
+    click.echo("\n— Evaluators — (persona_agent is always on; add others)")
+    ids = [k.id for k in kpis]
+    replay: Replay | None = None
+    if click.confirm("  Enable analytics replay (KPI actuals from a funnel export)?", default=False):
+        source = click.prompt("    Source", type=click.Choice(["posthog", "amplitude", "csv"]), default="csv")
+        replay = Replay(export_path=click.prompt("    Export file path"), source=source)
+
+    journeys: list[Journey] = []
+    if ids and click.confirm("  Add a scripted journey?", default=False):
+        while True:
+            name = click.prompt("    Journey name")
+            kpi_id = click.prompt("    Which KPI does it prove?", type=click.Choice(ids), default=ids[0])
+            success_signal = click.prompt("    Success signal", default="")
+            entry = click.prompt("    Entry point (blank = target root)", default="")
+            click.echo("    (steps are added by hand in ascent.yaml — they need the app's element refs)")
+            journeys.append(Journey(id=slugify(name), name=name, kpi_id=kpi_id,
+                                    success_signal=success_signal, entry_point=entry, steps=[]))
+            if not click.confirm("    Add another journey?", default=False):
+                break
+    return journeys, replay
 
 
 def _warn_unobservable(kpis: list[KPI], personas: list[Persona]) -> None:
@@ -188,12 +216,19 @@ def _build_config(existing: GoalConfig | None) -> GoalConfig:
     personas = _prompt_personas(kpis)
     _warn_unobservable(kpis, personas)
     budgets = _prompt_budgets(existing.budgets if existing else Budgets())
+    journeys, replay = _prompt_integrations(kpis)
+
+    evaluators = ["persona_agent"]
+    if journeys:
+        evaluators.append("journey")
+    if replay is not None:
+        evaluators.append("replay")
 
     return GoalConfig(
         version=existing.version if existing else 1,
         product=product, target=target, goal=goal, milestone=milestone,
-        kpis=kpis, personas=personas, budgets=budgets,
-        evaluators=existing.evaluators if existing else ["persona_agent"],
+        kpis=kpis, personas=personas, budgets=budgets, evaluators=evaluators,
+        journeys=journeys, replay=replay,
         extra=existing.extra if existing else {},
     )
 
@@ -214,6 +249,11 @@ def _print_summary(config: GoalConfig) -> None:
     click.echo("Personas:")
     for p in config.personas:
         click.echo(f"  - {p.id}: {p.name} → {', '.join(p.kpi_ids)}")
+    click.echo(f"evaluators: {', '.join(config.evaluators)}")
+    if config.replay is not None:
+        click.echo(f"replay:    {config.replay.source} @ {config.replay.export_path}")
+    for j in config.journeys:
+        click.echo(f"journey:   {j.id} → {j.kpi_id} ({len(j.steps)} step(s))")
 
 
 def run_init(config_path: str, force: bool = False) -> None:
